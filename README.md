@@ -1,6 +1,6 @@
 # Currency Tester
 
-A small currency converter that pulls exchange rates from [boursorama.com](https://www.boursorama.com) every hour and shows them in a single-page web UI. It has no npm dependencies: only Node.js 18 or newer is required.
+A small currency converter that pulls exchange rates from [boursorama.com](https://www.boursorama.com) every hour and shows them in a single-page web UI. The local server has no npm dependencies: only Node.js 18 or newer is required. (The Netlify deployment uses `@netlify/blobs`, installed automatically by Netlify at build time.)
 
 Supported currencies: **EUR, GBP, USD, ZAR**.
 
@@ -101,14 +101,18 @@ curl -X POST http://localhost:3000/api/refresh
 
 - `netlify.toml` publishes the repo root (for `index.html`) and points to `netlify/functions`.
 - `netlify/functions/api.mjs` handles `GET /api/rates` and `POST /api/refresh` using the same scraping code as the local server (`lib/rates.js`).
+- `netlify/functions/refresh-rates.mjs` is a [Scheduled Function](https://docs.netlify.com/build/functions/scheduled-functions/) that runs every hour (`@hourly`, minute 0 UTC) and refreshes the rates even when nobody visits the site.
+- `netlify/lib/store.mjs` persists the state in [Netlify Blobs](https://docs.netlify.com/build/data-and-storage/netlify-blobs/) (store `rates`, key `state`), so every function instance serves the same rates and nothing is lost on cold starts.
 
-Just connect the repo to Netlify (no build command needed) and push. The UI works unchanged.
+Just connect the repo to Netlify (no build command needed) and push. Netlify installs `@netlify/blobs` from `package.json` and the deploy log should show "2 functions bundled" (`api`, `refresh-rates`). The UI works unchanged. `.nvmrc` pins Node 22 for the build, which Netlify also uses as the functions runtime (`@netlify/blobs` needs Node >= 22.12).
 
-Differences from the local server, because Functions are stateless and have no timer:
+How it differs from the local server:
 
-- Rates are fetched from Boursorama when a request arrives and memoised in the warm function for one hour. After an idle period the first request may take a second longer.
-- **Actualiser maintenant** (`POST /api/refresh`) always fetches fresh rates.
-- The committed `rates.json` is bundled as a fallback so the table is never empty if Boursorama is unreachable. Commit an updated `rates.json` from time to time to keep that fallback recent.
+- The hourly refresh is done by the scheduled function instead of a `setInterval`. `nextUpdateAt` shown in the UI is the next scheduled run.
+- `GET /api/rates` reads the shared state from Blobs. If it is older than one hour (first deploy before the first scheduled run, or a missed run) it refreshes inline before answering.
+- **Actualiser maintenant** (`POST /api/refresh`) fetches fresh rates and writes them to Blobs, so all visitors see them.
+- The committed `rates.json` is bundled and used only while the Blobs store is still empty. There is no need to recommit it.
+- To trigger the scheduled function by hand: Netlify UI → Functions → `refresh-rates` → **Run now**, or `netlify functions:invoke refresh-rates` with `netlify dev` (which uses a sandboxed local Blobs store).
 
 ## Adding a currency
 
@@ -133,7 +137,9 @@ Restart the server afterwards. The UI picks up the new currency automatically fr
 | ---------------------------- | -------------------------------------------------------------------- |
 | `lib/rates.js`               | Currency list, Boursorama scraping, state refresh (shared).          |
 | `server.js`                  | Local HTTP server: UI, JSON API, hourly refresh, `rates.json` cache. |
-| `netlify/functions/api.mjs`  | Same JSON API as a Netlify Function.                                 |
+| `netlify/functions/api.mjs`  | Same JSON API as a Netlify Function, state read from Netlify Blobs.  |
+| `netlify/functions/refresh-rates.mjs` | Scheduled Function (`@hourly`) refreshing the rates on Netlify. |
+| `netlify/lib/store.mjs`      | Netlify Blobs persistence shared by the two functions.               |
 | `netlify.toml`               | Netlify configuration (publish dir, functions dir, bundler).         |
 | `index.html`                 | Single-page UI (French), served at `/`.                              |
 | `rates.json`                 | Cache of the last successful fetch. Generated automatically.         |

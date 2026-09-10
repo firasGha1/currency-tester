@@ -4,39 +4,39 @@
  * `config.path` below binds this function to `/api/rates` and `/api/refresh`,
  * so the UI keeps calling the same URLs as with the local `server.js`.
  *
- * Netlify Functions are stateless and have no long-running timer, so the
- * "hourly refresh" works differently here:
- *   - Rates are fetched from Boursorama on demand and memoised in the warm
- *     function instance for one hour (REFRESH_INTERVAL_MS).
- *   - POST /api/refresh bypasses the memo and fetches immediately.
- *   - The committed `rates.json` is bundled and used as a fallback when
- *     Boursorama is unreachable, so the UI never shows an empty table.
+ * State lives in Netlify Blobs (see `netlify/lib/store.mjs`), shared by every
+ * function instance:
+ *   - `functions/refresh-rates.mjs` (scheduled, @hourly) refreshes it every hour.
+ *   - GET /api/rates reads it. As a safety net, if the stored state is older than
+ *     REFRESH_INTERVAL_MS (store empty before the first scheduled run, or a
+ *     missed run), it refreshes inline before answering.
+ *   - POST /api/refresh fetches immediately and writes the result to the store.
  */
 
 import rateLib from '../../lib/rates.js';
-import bundledCache from '../../rates.json' with { type: 'json' };
+import { loadState, saveState } from '../lib/store.mjs';
 
-const { REFRESH_INTERVAL_MS, initialState, refreshState, publicState } = rateLib;
+const { REFRESH_INTERVAL_MS, refreshState, publicState } = rateLib;
 
-let state = loadBundledCache();
 let refreshing = null;
 
-function loadBundledCache() {
-	const s = initialState();
-	if (bundledCache && bundledCache.rates && typeof bundledCache.rates === 'object') {
-		Object.assign(s, bundledCache, { lastError: null, nextUpdateAt: null });
-	}
-	return s;
-}
-
-function isStale() {
+function isStale(state) {
 	if (!state.updatedAt) return true;
 	return Date.now() - Date.parse(state.updatedAt) >= REFRESH_INTERVAL_MS;
 }
 
-function refreshOnce() {
+/** Fetches, saves to Blobs and returns the fresh state. Concurrent calls share one fetch. */
+function refreshOnce(state) {
 	if (!refreshing) {
-		refreshing = refreshState(state).finally(() => {
+		refreshing = (async () => {
+			try {
+				await refreshState(state);
+			} finally {
+				// Save even on partial failure so lastAttemptAt / lastError are shared.
+				await saveState(state);
+			}
+			return state;
+		})().finally(() => {
 			refreshing = null;
 		});
 	}
@@ -57,9 +57,10 @@ export default async function handler(request) {
 	const { pathname } = new URL(request.url);
 
 	if (pathname === '/api/rates' && request.method === 'GET') {
-		if (isStale()) {
+		let state = await loadState();
+		if (isStale(state)) {
 			try {
-				await refreshOnce();
+				state = await refreshOnce(state);
 			} catch (e) {
 				state.lastError = e.message;
 			}
@@ -69,7 +70,7 @@ export default async function handler(request) {
 
 	if (pathname === '/api/refresh' && request.method === 'POST') {
 		try {
-			await refreshOnce();
+			const state = await refreshOnce(await loadState());
 			return json(200, publicState(state));
 		} catch (e) {
 			return json(500, { error: e.message });
