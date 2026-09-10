@@ -1,0 +1,8 @@
+[build]
+  # No build step: index.html is served as-is from the repo root.
+  publish = "."
+  functions = "netlify/functions"
+
+[functions]
+  # esbuild bundles lib/rates.js and rates.json into the function.
+  node_bundler = "esbuild"

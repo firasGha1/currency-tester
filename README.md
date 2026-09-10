@@ -95,9 +95,24 @@ curl -X POST http://localhost:3000/api/refresh
 - If a fetch partially fails, the currencies that did succeed are updated and the others keep their previous value. The error is exposed in `lastError` and shown in the UI.
 - Only one refresh runs at a time; concurrent requests to `/api/refresh` share the same fetch.
 
+## Deploying to Netlify
+
+`server.js` is a long-running Node process, which Netlify does not run: a plain Netlify deploy only serves static files, so `/api/rates` returns **404**. The repo therefore also ships the API as a Netlify Function:
+
+- `netlify.toml` publishes the repo root (for `index.html`) and points to `netlify/functions`.
+- `netlify/functions/api.mjs` handles `GET /api/rates` and `POST /api/refresh` using the same scraping code as the local server (`lib/rates.js`).
+
+Just connect the repo to Netlify (no build command needed) and push. The UI works unchanged.
+
+Differences from the local server, because Functions are stateless and have no timer:
+
+- Rates are fetched from Boursorama when a request arrives and memoised in the warm function for one hour. After an idle period the first request may take a second longer.
+- **Actualiser maintenant** (`POST /api/refresh`) always fetches fresh rates.
+- The committed `rates.json` is bundled as a fallback so the table is never empty if Boursorama is unreachable. Commit an updated `rates.json` from time to time to keep that fallback recent.
+
 ## Adding a currency
 
-Edit the `CURRENCIES` array at the top of `server.js`. Each entry has:
+Edit the `CURRENCIES` array at the top of `lib/rates.js`. Each entry has:
 
 - `code`: ISO code shown in the UI.
 - `name`: display name.
@@ -114,16 +129,20 @@ Restart the server afterwards. The UI picks up the new currency automatically fr
 
 ## Project layout
 
-| File           | Purpose                                                        |
-| -------------- | -------------------------------------------------------------- |
-| `server.js`    | HTTP server, Boursorama scraping, hourly refresh, cache.       |
-| `index.html`   | Single-page UI (French), served at `/`.                        |
-| `rates.json`   | Cache of the last successful fetch. Generated automatically.   |
-| `package.json` | Project metadata and the `npm start` script.                   |
+| File                         | Purpose                                                              |
+| ---------------------------- | -------------------------------------------------------------------- |
+| `lib/rates.js`               | Currency list, Boursorama scraping, state refresh (shared).          |
+| `server.js`                  | Local HTTP server: UI, JSON API, hourly refresh, `rates.json` cache. |
+| `netlify/functions/api.mjs`  | Same JSON API as a Netlify Function.                                 |
+| `netlify.toml`               | Netlify configuration (publish dir, functions dir, bundler).         |
+| `index.html`                 | Single-page UI (French), served at `/`.                              |
+| `rates.json`                 | Cache of the last successful fetch. Generated automatically.         |
+| `package.json`               | Project metadata and the `npm start` script.                         |
 
 ## Troubleshooting
 
 - **"Aucun taux disponible pour le moment"**: the first fetch has not finished or failed, and there is no `rates.json` cache yet. Check the server console for the error and try **Actualiser maintenant**.
 - **`HTTP 4xx/5xx for symbol "..."` or `non-JSON response`**: Boursorama changed or blocked the endpoint for that symbol. Add an alternative symbol to `toEur` or `fromEur` for that currency.
 - **Port already in use**: start the server with a different `PORT` as shown above.
+- **`404 Not Found` on `/api/rates` on Netlify**: `netlify.toml` or `netlify/functions/api.mjs` is missing from the deployed commit, or the site's "Functions directory" setting in the Netlify UI overrides it. Check the deploy log for "1 function bundled (api)".
 "# currency-tester" 
