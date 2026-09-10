@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Taux de change</title>
+<style>
+	:root {
+		--bg: #f5f6f8;
+		--card: #ffffff;
+		--border: #d6d9de;
+		--text: #1f2328;
+		--muted: #6b7280;
+		--head: #fde4dc;
+		--base: #e3e6f7;
+		--ok: #1a7f37;
+		--err: #b42318;
+		--accent: #2f5fd6;
+	}
+	* { box-sizing: border-box; }
+	body {
+		margin: 0;
+		font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+		background: var(--bg);
+		color: var(--text);
+	}
+	.wrap { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+	h1 { font-size: 22px; margin: 0 0 4px; }
+	.status { font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 20px; }
+	.status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: middle; }
+	.status.ok .dot { background: var(--ok); }
+	.status.err .dot { background: var(--err); }
+	.status .error { color: var(--err); }
+	button {
+		font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 6px; cursor: pointer;
+		border: 1px solid var(--border); background: var(--card); color: var(--text);
+	}
+	button:hover { border-color: var(--accent); color: var(--accent); }
+	button:disabled { opacity: .5; cursor: default; }
+
+	.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+	@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+
+	.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+	table { width: 100%; border-collapse: collapse; }
+	th, td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 15px; }
+	tr:last-child td { border-bottom: none; }
+	th { background: var(--head); font-weight: 600; text-align: center; }
+	td.code { text-align: center; width: 45%; }
+	td.num { text-align: right; font-variant-numeric: tabular-nums; }
+	td.label { color: var(--text); }
+
+	.base { background: var(--base); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+	.base label { font-weight: 600; font-size: 16px; }
+	.base input {
+		flex: 1; font: inherit; font-size: 20px; text-align: right; padding: 8px 12px;
+		border: 1px solid var(--border); border-radius: 6px; background: #fff; min-width: 0;
+		font-variant-numeric: tabular-nums;
+	}
+	.base input:focus { outline: 2px solid var(--accent); border-color: var(--accent); }
+	.base select { font: inherit; font-size: 16px; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: #fff; }
+
+	.group { margin-bottom: 16px; }
+	.group .card table td { font-size: 15px; }
+	.group td.label { width: 45%; }
+	.group td.num { font-weight: 600; }
+	.group.active .card { outline: 2px solid var(--accent); }
+	.small { font-size: 12px; color: var(--muted); }
+	.footer { margin-top: 24px; font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+	<h1>Taux de change</h1>
+	<div class="status" id="status">
+		<span><span class="dot"></span><span id="statusText">Chargement des taux…</span></span>
+		<span id="nextText"></span>
+		<button id="refreshBtn" type="button">Actualiser maintenant</button>
+		<span class="error" id="errorText"></span>
+	</div>
+
+	<div class="base">
+		<label for="baseValue">Valeur de base</label>
+		<input id="baseValue" type="text" inputmode="decimal" value="27 024,00" autocomplete="off">
+		<select id="baseCurrency" aria-label="Devise de la valeur de base" title="Devise de la valeur de base"></select>
+	</div>
+
+	<div class="grid">
+		<div>
+			<div class="card">
+				<table>
+					<thead><tr><th colspan="2">Taux de change (1 devise = X EUR)</th></tr></thead>
+					<tbody id="ratesBody"></tbody>
+				</table>
+			</div>
+			<p class="small" style="margin-top:8px">
+				Source : boursorama.com — mis à jour automatiquement toutes les heures.
+				Conversion A → B = base × taux[A] ÷ taux[B].
+			</p>
+		</div>
+		<div id="groups"></div>
+	</div>
+
+	<div class="footer" id="detailsText"></div>
+</div>
+
+<script>
+(function () {
+	const POLL_MS = 60 * 1000; // re-read rates from the server every minute
+	const fmt = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+	const fmtRate = new Intl.NumberFormat('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+	const fmtTime = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'short', timeStyle: 'short' });
+
+	let data = { rates: {}, currencies: [] };
+	let baseCurrency = null;
+
+	const $ = (id) => document.getElementById(id);
+	const baseInput = $('baseValue');
+	const baseSelect = $('baseCurrency');
+
+	function parseNumber(str) {
+		if (!str) return 0;
+		let s = String(str).replace(/\s| | /g, '');
+		// If both separators exist, the last one is the decimal separator.
+		const lastComma = s.lastIndexOf(','), lastDot = s.lastIndexOf('.');
+		if (lastComma !== -1 && lastDot !== -1) {
+			if (lastComma > lastDot) s = s.replace(/\./g, '').replace(',', '.');
+			else s = s.replace(/,/g, '');
+		} else if (lastComma !== -1) {
+			s = s.replace(',', '.');
+		}
+		const n = parseFloat(s);
+		return Number.isFinite(n) ? n : 0;
+	}
+
+	function convert(amount, from, to) {
+		const rf = data.rates[from], rt = data.rates[to];
+		if (!rf || !rt) return null;
+		return amount * rf / rt;
+	}
+
+	function renderRates() {
+		const rows = data.currencies.map((c) => {
+			const r = data.rates[c.code];
+			return `<tr><td class="code">${c.code}</td><td class="num">${r == null ? '—' : fmtRate.format(r)}</td></tr>`;
+		});
+		$('ratesBody').innerHTML = rows.join('');
+	}
+
+	function renderGroups() {
+		const amount = parseNumber(baseInput.value);
+		const codes = data.currencies.map((c) => c.code);
+		const html = codes.map((from) => {
+			const rows = codes.filter((to) => to !== from).map((to) => {
+				const v = convert(amount, from, to);
+				return `<tr><td class="label">${from} - ${to}</td><td class="num">${v == null ? '—' : fmt.format(v)}</td></tr>`;
+			}).join('');
+			const active = from === baseCurrency ? ' active' : '';
+			return `<div class="group${active}"><div class="card"><table><tbody>${rows}</tbody></table></div></div>`;
+		}).join('');
+		$('groups').innerHTML = html;
+	}
+
+	function renderStatus() {
+		const st = $('status');
+		st.classList.toggle('ok', !!data.updatedAt && !data.lastError);
+		st.classList.toggle('err', !!data.lastError);
+		$('statusText').textContent = data.updatedAt
+			? `Taux mis à jour le ${fmtTime.format(new Date(data.updatedAt))}`
+			: 'Aucun taux disponible pour le moment';
+		$('nextText').textContent = data.nextUpdateAt
+			? `Prochaine mise à jour : ${fmtTime.format(new Date(data.nextUpdateAt))}`
+			: '';
+		$('errorText').textContent = data.lastError ? `Dernière tentative échouée : ${data.lastError}` : '';
+
+		const det = data.details || {};
+		const parts = Object.keys(det).filter((k) => det[k] && det[k].symbol).map((k) => `${k} ← ${det[k].symbol}`);
+		$('detailsText').textContent = parts.length ? 'Symboles Boursorama : ' + parts.join(' · ') : '';
+	}
+
+	function renderSelect() {
+		const current = baseSelect.value || baseCurrency || 'EUR';
+		baseSelect.innerHTML = data.currencies.map((c) => `<option value="${c.code}">${c.code}</option>`).join('');
+		baseSelect.value = data.currencies.some((c) => c.code === current) ? current : (data.currencies[0] || {}).code || '';
+		baseCurrency = baseSelect.value;
+	}
+
+	function renderAll() {
+		renderSelect();
+		renderRates();
+		renderGroups();
+		renderStatus();
+	}
+
+	async function loadRates() {
+		try {
+			const res = await fetch('/api/rates', { cache: 'no-store' });
+			if (!res.ok) throw new Error('HTTP ' + res.status);
+			data = await res.json();
+		} catch (e) {
+			data.lastError = 'Serveur injoignable : ' + e.message;
+		}
+		renderAll();
+	}
+
+	async function forceRefresh() {
+		const btn = $('refreshBtn');
+		btn.disabled = true;
+		btn.textContent = 'Actualisation…';
+		try {
+			const res = await fetch('/api/refresh', { method: 'POST' });
+			if (res.ok) data = await res.json();
+			else data.lastError = 'HTTP ' + res.status;
+		} catch (e) {
+			data.lastError = 'Serveur injoignable : ' + e.message;
+		}
+		btn.disabled = false;
+		btn.textContent = 'Actualiser maintenant';
+		renderAll();
+	}
+
+	baseInput.addEventListener('input', renderGroups);
+	baseInput.addEventListener('blur', () => {
+		const n = parseNumber(baseInput.value);
+		baseInput.value = fmt.format(n);
+		renderGroups();
+	});
+	baseInput.addEventListener('focus', () => baseInput.select());
+	baseSelect.addEventListener('change', () => { baseCurrency = baseSelect.value; renderGroups(); });
+	$('refreshBtn').addEventListener('click', forceRefresh);
+
+	loadRates();
+	setInterval(loadRates, POLL_MS);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "rates": {
+    "EUR": 1,
+    "GBP": 1.16309,
+    "USD": 0.86055,
+    "ZAR": 0.05315
+  },
+  "updatedAt": "2026-09-10T14:13:45.914Z",
+  "nextUpdateAt": "2026-09-10T15:10:45.715Z",
+  "lastAttemptAt": "2026-09-10T14:13:45.914Z",
+  "lastError": null,
+  "source": "boursorama.com",
+  "details": {
+    "EUR": {
+      "symbol": null,
+      "day": null
+    },
+    "GBP": {
+      "symbol": "3fGBPEUR",
+      "day": 20706
+    },
+    "USD": {
+      "symbol": "3fUSD_EUR",
+      "day": 20706
+    },
+    "ZAR": {
+      "symbol": "3fZAR_EUR",
+      "day": 20706
+    }
+  }
+}
